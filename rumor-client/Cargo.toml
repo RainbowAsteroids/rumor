@@ -1,0 +1,10 @@
+[package]
+name = "rumor-client"
+version = "0.1.0"
+edition = "2021"
+
+description = "reserved; client for rumor file synchronization protocol"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]

@@ -1,0 +1,16 @@
+[workspace]
+resolver = "2"
+
+members = [
+    "rumor",
+    "rumor-client",
+    "rumor-server",
+]
+
+[workspace.package]
+license = "MIT"
+homepage = "https://github.com/RainbowAsteroids/rumor"
+repository = "https://github.com/RainbowAsteroids/rumor"
+keywords = ["synchronization"]
+categories = ["filesystem"]
+readme = "README.md"
