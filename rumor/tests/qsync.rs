@@ -100,3 +100,34 @@ fn tiff_uneven_test() {
     assert_eq!(buffer.len(), data.len());
     assert_eq!(buffer, data);
 }
+
+#[test]
+fn shallow_packages_test() {
+    let test_resources_path = std::env!("CARGO_MANIFEST_DIR").to_owned() + "/resources/test/";
+
+    let mut older_file = File::open(test_resources_path.clone() + "packages.older.json").unwrap();
+    let mut latest_file = File::open(test_resources_path + "packages.latest.json").unwrap();
+
+    let file_digest = FileDigestBuilder::new().chunk_size(16)
+            .build(&mut older_file).unwrap();
+
+    let file_recipe = FileRecipe::new(
+        &mut latest_file,
+        &file_digest,
+    ).unwrap();
+
+    //dbg!(&file_recipe);
+
+    let mut buffer = vec![];
+    latest_file.seek(io::SeekFrom::Start(0)).unwrap();
+    latest_file.read_to_end(&mut buffer).unwrap();
+
+    let data = file_recipe.get_data(&mut older_file).collect::<io::Result<Vec<_>>>().unwrap();
+
+    // we're ignoring the error because this is a convenience feature of this test
+    let _ = fs::write("/tmp/test-output.ron", format!("{:?}", &file_recipe));
+    // let _ = fs::write("/tmp/test-output.cs", &data);
+
+    assert_eq!(buffer.len(), data.len());
+    assert_eq!(buffer, data);
+}

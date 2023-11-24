@@ -124,40 +124,52 @@ impl FileRecipe {
         }
 
         let mut recipe = vec![];
-        let mut hash_buffer = vec![];
 
-        if 0 == dest_file.by_ref().take(file_digest.chunk_size).read_to_end(&mut hash_buffer)? {
+        // this buffer contains all the data before we pushed a new ingredient to `recipe`.
+        // Generally, this buffer will be equal to or larger than file_digest.chunk_size, unless a
+        // "reload" step reached the EOF, in which case we are on the last iteration of the loop.
+        let mut buffer = vec![];
+
+        if 0 == dest_file.by_ref().take(file_digest.chunk_size).read_to_end(&mut buffer)? {
             // if the first load is empty, then that means there's no data in the dest_file,
             // therefore the file is empty, so no instructions are needed in the recipe
             return Ok(FileRecipe { recipe: vec![], chunk_size: file_digest.chunk_size });
         } 
 
-        let mut rolling_hash = RollingAdler32::from_buffer(&hash_buffer);
+        let mut rolling_hash = RollingAdler32::from_buffer(&buffer);
 
-        let mut arbitrary_buffer = vec![];
         loop {
             if { // this block returns ! if there's a chunk match or true
                 match file_digest.chunks.get(&Adler32Hash(rolling_hash.hash())) {
                     Some(v) => { // an adler hash matched!
                         // double check with the md5 hash
-                        if let Some(pair) = get_pair(&v, md5::compute(&hash_buffer)) {
-                            if arbitrary_buffer.len() > 0 { // dump the arbitrary buffer
-                                recipe.push(FileIngredient::Data(arbitrary_buffer));
-                                arbitrary_buffer = vec![];
+                        if let Some(pair) = get_pair(&v, md5::compute(
+                                buffer.iter().rev()
+                                .take(file_digest.chunk_size as usize)
+                                .rev()
+                                .map(|x| *x).collect::<Vec<u8>>())) 
+                        {
+                            let excess = buffer
+                                .iter().rev()
+                                .skip(file_digest.chunk_size as usize)
+                                .rev()
+                                .map(|x| *x).collect::<Vec<u8>>();
+                            if excess.len() > 0 { // dump the excess
+                                recipe.push(FileIngredient::Data(excess));
                             } 
                             // push the new reference
                             recipe.push(FileIngredient::Reference(pair.1));
 
-                            // reset the hashed buffer
-                            hash_buffer.clear();
+                            // reset the buffer
+                            buffer.clear();
 
                             // read data into the hash buffer. if the buffer is empty, then there's
                             // no more file
-                            if dest_file.by_ref().take(file_digest.chunk_size).read_to_end(&mut hash_buffer)? == 0 {
+                            if dest_file.by_ref().take(file_digest.chunk_size).read_to_end(&mut buffer)? == 0 {
                                 break;
                             }
                             // reload the hash, since we cleared out the hash buffer
-                            rolling_hash = RollingAdler32::from_buffer(&hash_buffer);
+                            rolling_hash = RollingAdler32::from_buffer(&buffer);
 
                             continue
                         } else { // no md5 = no match
@@ -167,18 +179,23 @@ impl FileRecipe {
                     None => true // no adler = no match
                 }
             } { // there was no match with the chunk :(
+                if buffer.len() < file_digest.chunk_size as usize { // trust me, we were at the EOF
+                    recipe.push(FileIngredient::Data(buffer));
+                    break;
+                }
+                
                 // pull the last seen byte out of the rolling hash window
-                let dead_byte = hash_buffer.remove(0);
-                rolling_hash.remove((file_digest.chunk_size - 1) as usize, dead_byte);
-                arbitrary_buffer.push(dead_byte); // and add said byte into the arbitrary buffer
+                let dead_byte = buffer.get(buffer.len() - file_digest.chunk_size as usize)
+                    .unwrap_or(&69); // if dead_byte is none, that means the next branch will fail
+                                     // anyways, so it doesn't matter what the default value is
+                rolling_hash.remove((file_digest.chunk_size - 1) as usize, *dead_byte);
 
                 if let Some(byte) = dest_file.by_ref().bytes().next() { // get another byte
                     let byte = byte?;
                     rolling_hash.update(byte); // add it to the hash
-                    hash_buffer.push(byte); // and to the hash buffer
+                    buffer.push(byte); // and to the hash buffer
                 } else { // if we can't get another byte, then there's nothing more in the file
-                    arbitrary_buffer.extend_from_slice(&hash_buffer);
-                    recipe.push(FileIngredient::Data(arbitrary_buffer));
+                    recipe.push(FileIngredient::Data(buffer));
                     break;
                 }
             }
