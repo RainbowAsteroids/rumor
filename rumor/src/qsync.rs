@@ -37,6 +37,8 @@ pub struct FileRecipeIterator<'a> {
     src_file: &'a mut File,
     instruction_iterator: slice::Iter<'a, FileIngredient>,
     data: Vec<u8>,
+    data_index: usize // i feel like i could use an iterator, but im done fighting the borrow
+                      // checker
 }
 
 impl Adler32Hash {
@@ -190,7 +192,8 @@ impl FileRecipe {
             chunk_size: self.chunk_size,
             src_file,
             instruction_iterator: self.recipe.iter(),
-            data: vec![]
+            data: vec![],
+            data_index: 0
         }
     }
 }
@@ -199,31 +202,31 @@ impl Iterator for FileRecipeIterator<'_> {
     type Item = io::Result<u8>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if let Some(byte) = self.data.get(0) {
-            let byte = *byte;
-            self.data.remove(0);
-            Some(Ok(byte))
-       } else {
-           match self.instruction_iterator.next() {
-               None => None,
-               Some(FileIngredient::Data(v)) => {
-                   self.data = v.clone();
-                   self.next()
-               }
-               Some(FileIngredient::Reference(index)) => {
-                   if let Err(e) = self.src_file.seek(io::SeekFrom::Start(index * self.chunk_size)) {
+        if let Some(byte) = self.data.get(self.data_index) {
+            self.data_index += 1;
+            Some(Ok(*byte))
+        } else {
+            self.data_index = 0;
+            match self.instruction_iterator.next() {
+                None => None,
+                Some(FileIngredient::Data(v)) => {
+                    self.data = v.clone();
+                    self.next()
+                }
+                Some(FileIngredient::Reference(index)) => {
+                    if let Err(e) = self.src_file.seek(io::SeekFrom::Start(index * self.chunk_size)) {
                         return Some(Err(e));
-                   }
-                   
-                   let mut buffer = vec![];
-                   if let Err(e) = self.src_file.by_ref().take(self.chunk_size).read_to_end(&mut buffer) {
-                       return Some(Err(e));
-                   }
+                    }
 
-                   self.data = buffer;
-                   self.next()
-               }
-           }
-       }
+                    let mut buffer = vec![];
+                    if let Err(e) = self.src_file.by_ref().take(self.chunk_size).read_to_end(&mut buffer) {
+                        return Some(Err(e));
+                    }
+
+                    self.data = buffer;
+                    self.next()
+                }
+            }
+        }
     }
 }
