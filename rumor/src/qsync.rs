@@ -69,10 +69,10 @@ impl FileDigestBuilder {
 
             file.by_ref().take(n).read_to_end(&mut result)?;
 
-            if result.len() > 0 {
-                return Ok(Some(result))
+            if !result.is_empty() {
+                Ok(Some(result))
             } else {
-                return Ok(None);
+                Ok(None)
             }
         }
 
@@ -100,6 +100,12 @@ impl FileDigestBuilder {
             chunk_size: self.chunk_size,
             chunks
         })
+    }
+}
+
+impl Default for FileDigestBuilder {
+    fn default() -> Self {
+        FileDigestBuilder::new()
     }
 }
 
@@ -139,45 +145,41 @@ impl FileRecipe {
         let mut reader = BufReader::new(dest_file);
 
         loop {
-            if { // this block returns ! if there's a chunk match or true
-                match file_digest.chunks.get(&Adler32Hash(rolling_hash.hash())) {
-                    Some(v) => { // an adler hash matched!
-                        // double check with the md5 hash
-                        if let Some(pair) = get_pair(&v, md5::compute(
-                                buffer.iter().rev()
-                                .take(file_digest.chunk_size as usize)
-                                .rev()
-                                .map(|x| *x).collect::<Vec<u8>>())) 
-                        {
-                            let excess = buffer
-                                .iter().rev()
-                                .skip(file_digest.chunk_size as usize)
-                                .rev()
-                                .map(|x| *x).collect::<Vec<u8>>();
-                            if excess.len() > 0 { // dump the excess
-                                recipe.push(FileIngredient::Data(excess));
-                            } 
-                            // push the new reference
-                            recipe.push(FileIngredient::Reference(pair.1));
+            if match file_digest.chunks.get(&Adler32Hash(rolling_hash.hash())) {
+                Some(v) => { // an adler hash matched!
+                    // double check with the md5 hash
+                    if let Some(pair) = get_pair(v, md5::compute(
+                            buffer.iter().rev()
+                            .take(file_digest.chunk_size as usize)
+                            .rev().copied().collect::<Vec<u8>>())) 
+                    {
+                        let excess = buffer
+                            .iter().rev()
+                            .skip(file_digest.chunk_size as usize)
+                            .rev().copied().collect::<Vec<u8>>();
+                        if !excess.is_empty() { // dump the excess
+                            recipe.push(FileIngredient::Data(excess));
+                        } 
+                        // push the new reference
+                        recipe.push(FileIngredient::Reference(pair.1));
 
-                            // reset the buffer
-                            buffer.clear();
+                        // reset the buffer
+                        buffer.clear();
 
-                            // read data into the hash buffer. if the buffer is empty, then there's
-                            // no more file
-                            if reader.by_ref().take(file_digest.chunk_size).read_to_end(&mut buffer)? == 0 {
-                                break;
-                            }
-                            // reload the hash, since we cleared out the hash buffer
-                            rolling_hash = RollingAdler32::from_buffer(&buffer);
-
-                            continue
-                        } else { // no md5 = no match
-                            true
+                        // read data into the hash buffer. if the buffer is empty, then there's
+                        // no more file
+                        if reader.by_ref().take(file_digest.chunk_size).read_to_end(&mut buffer)? == 0 {
+                            break;
                         }
+                        // reload the hash, since we cleared out the hash buffer
+                        rolling_hash = RollingAdler32::from_buffer(&buffer);
+
+                        continue
+                    } else { // no md5 = no match
+                        true
                     }
-                    None => true // no adler = no match
                 }
+                None => true // no adler = no match
             } { // there was no match with the chunk :(
                 if buffer.len() < file_digest.chunk_size as usize { // trust me, we were at the EOF
                     recipe.push(FileIngredient::Data(buffer));
