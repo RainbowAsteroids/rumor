@@ -1,10 +1,10 @@
+use std::io::BufReader;
 use std::rc::Rc;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
 use std::io::Seek;
 use std::io;
-use std::io::Bytes;
 
 use md5;
 use adler32::RollingAdler32;
@@ -64,15 +64,10 @@ impl FileDigestBuilder {
     }  
 
     pub fn build(self, file: &mut File) -> io::Result<FileDigest> {
-        // TODO: use Read.by_ref()?
-        fn get_n<R: Read>(iter: &mut Bytes<R>, mut n: u64) -> io::Result<Option<Vec<u8>>> {
-            let mut result = Vec::with_capacity(n.try_into().unwrap());
+        fn get_n(file: &mut File, n: u64) -> io::Result<Option<Vec<u8>>> {
+            let mut result = Vec::with_capacity(n as usize);
 
-            for item in iter {
-                result.push(item?);
-                n -= 1;
-                if n <= 0 { break; }
-            }
+            file.by_ref().take(n).read_to_end(&mut result)?;
 
             if result.len() > 0 {
                 return Ok(Some(result))
@@ -83,11 +78,9 @@ impl FileDigestBuilder {
 
         let mut chunks: HashMap<Adler32Hash, Vec<(md5::Digest, u64)>> = HashMap::new();
 
-        let mut iter = file.bytes();
-
         let mut n = 0;
 
-        while let Some(data) = get_n(&mut iter, self.chunk_size)? {
+        while let Some(data) = get_n(file, self.chunk_size)? {
             let adler = Adler32Hash::new(&data);
             let md5_index_pair = (md5::compute(&data), n);
 
@@ -143,6 +136,8 @@ impl FileRecipe {
 
         let mut rolling_hash = RollingAdler32::from_buffer(&buffer);
 
+        let mut reader = BufReader::new(dest_file);
+
         loop {
             if { // this block returns ! if there's a chunk match or true
                 match file_digest.chunks.get(&Adler32Hash(rolling_hash.hash())) {
@@ -170,7 +165,7 @@ impl FileRecipe {
 
                             // read data into the hash buffer. if the buffer is empty, then there's
                             // no more file
-                            if dest_file.by_ref().take(file_digest.chunk_size).read_to_end(&mut buffer)? == 0 {
+                            if reader.by_ref().take(file_digest.chunk_size).read_to_end(&mut buffer)? == 0 {
                                 break;
                             }
                             // reload the hash, since we cleared out the hash buffer
@@ -195,7 +190,7 @@ impl FileRecipe {
                                      // anyways, so it doesn't matter what the default value is
                 rolling_hash.remove((file_digest.chunk_size - 1) as usize, *dead_byte);
 
-                if let Some(byte) = dest_file.by_ref().bytes().next() { // get another byte
+                if let Some(byte) = reader.by_ref().bytes().next() { // get another byte
                     let byte = byte?;
                     rolling_hash.update(byte); // add it to the hash
                     buffer.push(byte); // and to the hash buffer
