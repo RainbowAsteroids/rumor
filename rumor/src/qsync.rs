@@ -1,10 +1,10 @@
+use std::rc::Rc;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
 use std::io::Seek;
 use std::io;
 use std::io::Bytes;
-use std::slice;
 
 use md5;
 use adler32::RollingAdler32;
@@ -32,10 +32,15 @@ pub struct FileRecipe {
     recipe: Vec<FileIngredient>
 }
 
-pub struct FileRecipeIterator<'a> {
-    chunk_size: u64,
-    src_file: &'a mut File,
-    instruction_iterator: slice::Iter<'a, FileIngredient>,
+#[derive(Clone)]
+enum IteratorIngredient {
+    Data(Vec<u8>),
+    Reference(Rc<Vec<u8>>)
+}
+
+#[derive(Clone)]
+pub struct FileRecipeIterator {
+    ingredient_iterator: <Vec<IteratorIngredient> as IntoIterator>::IntoIter,
     data: Vec<u8>,
     data_index: usize // i feel like i could use an iterator, but im done fighting the borrow
                       // checker
@@ -204,43 +209,56 @@ impl FileRecipe {
         Ok(FileRecipe { recipe, chunk_size: file_digest.chunk_size })
     }
 
-    pub fn get_data<'a>(&'a self, src_file: &'a mut File) -> FileRecipeIterator<'a> {
-        FileRecipeIterator {
-            chunk_size: self.chunk_size,
-            src_file,
-            instruction_iterator: self.recipe.iter(),
+    pub fn get_data(self, src_file: &mut File) -> io::Result<FileRecipeIterator> {
+        let mut references: HashMap<u64, Rc<Vec<u8>>> = HashMap::new();
+        let mut ingredients = vec![];
+
+        for x in self.recipe {
+            ingredients.push(
+                match x {
+                    FileIngredient::Data(v) => IteratorIngredient::Data(v),
+                    FileIngredient::Reference(index) => {
+                        if let Some(rc) = references.get(&index) {
+                            IteratorIngredient::Reference(rc.clone())
+                        } else {
+                            let mut buf = vec![];
+
+                            src_file.seek(io::SeekFrom::Start(index * self.chunk_size))?;
+                            src_file.by_ref().take(self.chunk_size).read_to_end(&mut buf)?;
+
+                            references.insert(index, Rc::new(buf));
+                            IteratorIngredient::Reference(references.get(&index).unwrap().clone())
+                        }
+                    }
+                }
+            )
+        }
+
+        Ok(FileRecipeIterator {
+            ingredient_iterator: ingredients.into_iter(),
             data: vec![],
             data_index: 0
-        }
+        })
     }
 }
 
-impl Iterator for FileRecipeIterator<'_> {
-    type Item = io::Result<u8>;
+impl Iterator for FileRecipeIterator {
+    type Item = u8;
 
     fn next(&mut self) -> Option<Self::Item> {
         if let Some(byte) = self.data.get(self.data_index) {
             self.data_index += 1;
-            Some(Ok(*byte))
+            Some(*byte)
         } else {
             self.data_index = 0;
-            match self.instruction_iterator.next() {
+            match self.ingredient_iterator.next() {
                 None => None,
-                Some(FileIngredient::Data(v)) => {
+                Some(IteratorIngredient::Data(v)) => {
                     self.data = v.clone();
                     self.next()
                 }
-                Some(FileIngredient::Reference(index)) => {
-                    if let Err(e) = self.src_file.seek(io::SeekFrom::Start(index * self.chunk_size)) {
-                        return Some(Err(e));
-                    }
-
-                    let mut buffer = vec![];
-                    if let Err(e) = self.src_file.by_ref().take(self.chunk_size).read_to_end(&mut buffer) {
-                        return Some(Err(e));
-                    }
-
-                    self.data = buffer;
+                Some(IteratorIngredient::Reference(rc)) => {
+                    self.data = rc.to_vec();
                     self.next()
                 }
             }
